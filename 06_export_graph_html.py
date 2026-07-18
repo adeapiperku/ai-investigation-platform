@@ -1,3 +1,4 @@
+# python 06_export_graph_html.py
 """Step 6 entry point: export the knowledge graph as an interactive HTML page.
 
 Usage:
@@ -217,6 +218,8 @@ const COLORS = { client:"#f778ba", host:"#58a6ff", session:"#56d4dd", request:"#
   user:"#3fb950", application:"#e3b341", file:"#7d8896", hash:"#59636e",
   ip:"#ff7b72", mac:"#ffa657", artifact:"#bc8cff", url:"#39c5cf", cve:"#f85149" };
 const color = t => COLORS[t] || "#8b949e";
+const BULK = t => t === "file" || t === "hash";           // recede these
+const KEYLABEL = new Set(["client","host","user","cve","application","ip"]);
 
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
 const tip = document.getElementById("tip");
@@ -229,7 +232,9 @@ addEventListener("resize", () => { resize(); });
 const nodes = V.nodes.map((n,i) => ({...n, i,
   x: Math.cos(i*2.4)*260 + (Math.random()-0.5)*60,
   y: Math.sin(i*2.4)*260 + (Math.random()-0.5)*60, vx:0, vy:0,
-  r: Math.max(4.5, Math.min(26, 4.5 + Math.log2((n.ec||1)+1)*2.3)),
+  r: (n.type==="file"||n.type==="hash")
+       ? Math.max(3, Math.min(9, 3 + Math.log2((n.ec||1)+1)*1.4))
+       : Math.max(5.5, Math.min(26, 5.5 + Math.log2((n.ec||1)+1)*2.4)),
   adj: new Set(), inc: [] }));
 const links = V.links.map(l => ({...l, s: nodes[l.s], t: nodes[l.t]}));
 for (const l of links){ l.s.adj.add(l.t); l.t.adj.add(l.s); l.s.inc.push(l); l.t.inc.push(l); }
@@ -241,7 +246,7 @@ const toScreen = (x,y) => [x*scale+ox, y*scale+oy];
 const toWorld = (px,py) => [(px-ox)/scale, (py-oy)/scale];
 
 // --- Fruchterman-Reingold initial layout ---
-const K = Math.sqrt((1500*950)/Math.max(nodes.length,1)) * 0.9;
+const K = Math.sqrt((1500*950)/Math.max(nodes.length,1)) * 1.25;
 function layout(iters){
   let temp = K*6;
   for (let it=0; it<iters; it++){
@@ -313,8 +318,8 @@ function draw(){
     const [x1,y1]=toScreen(l.s.x,l.s.y), [x2,y2]=toScreen(l.t.x,l.t.y);
     const [cx,cy]=curve(x1,y1,x2,y2);
     if (inc){ ctx.strokeStyle = color((selNode||hoverNode).type)+"cc"; ctx.lineWidth=1.6; }
-    else if (act){ ctx.strokeStyle="rgba(125,136,150,0.05)"; ctx.lineWidth=1; }
-    else { ctx.strokeStyle="rgba(125,136,150,0.16)"; ctx.lineWidth=1; }
+    else if (act){ ctx.strokeStyle="rgba(125,136,150,0.04)"; ctx.lineWidth=1; }
+    else { ctx.strokeStyle="rgba(125,136,150,0.09)"; ctx.lineWidth=1; }
     ctx.beginPath(); ctx.moveTo(x1,y1); ctx.quadraticCurveTo(cx,cy,x2,y2); ctx.stroke();
   }
 
@@ -325,14 +330,16 @@ function draw(){
     const [x,y]=toScreen(n.x,n.y);
     const hit = query && n.label.toLowerCase().includes(query);
     const dim = (act && !act.has(n)) || (query && !hit);
-    ctx.globalAlpha = dim ? 0.14 : 1;
-    ctx.shadowColor = color(n.type); ctx.shadowBlur = dim ? 0 : (n===selNode ? 26 : 12);
+    const bulk = BULK(n.type);
+    ctx.globalAlpha = dim ? 0.10 : (bulk ? 0.45 : 1);
+    ctx.shadowColor = color(n.type);
+    ctx.shadowBlur = dim ? 0 : (n===selNode ? 24 : (bulk ? 0 : 11));
     ctx.beginPath(); ctx.arc(x,y,n.r,0,6.2832);
     ctx.fillStyle = color(n.type); ctx.fill();
     ctx.shadowBlur = 0;
     if (n===selNode || n===hoverNode || hit){
       ctx.lineWidth = 2.2; ctx.strokeStyle = "#fff"; ctx.stroke();
-    } else { ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.stroke(); }
+    } else if (!bulk){ ctx.lineWidth = 1; ctx.strokeStyle = "rgba(255,255,255,0.16)"; ctx.stroke(); }
     ctx.globalAlpha = 1;
   }
 
@@ -342,7 +349,7 @@ function draw(){
     if (!vis(n)) continue;
     const hit = query && n.label.toLowerCase().includes(query);
     const show = hit || n===selNode || n===hoverNode || (act && act.has(n)) ||
-                 (!act && !query && n.r >= 11);
+                 (!act && !query && KEYLABEL.has(n.type) && n.r >= 7);
     if (!show) continue;
     const [x,y]=toScreen(n.x,n.y);
     const txt = n.label.length>30 ? n.label.slice(0,29)+"…" : n.label;

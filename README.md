@@ -18,9 +18,14 @@ python 02_parse_artifacts.py        # add browser history/downloads (Edge SQLite
 python 03_build_knowledge_graph.py  # build the knowledge graph
 python 04_detect_anomalies.py       # remove duplicates + flag anomalies
 python 05_answer_questions.py       # answer the investigation questions
+python 06_export_graph_html.py      # (optional) interactive HTML of the graph
 ```
 
 Order matters — each step reads the previous step's output.
+
+Step 6 writes `data/processed/knowledge_graph.html` — open it in any browser
+(no internet needed) to explore the graph: scroll to zoom, drag to pan, drag a
+node to move it, hover for details, click a legend row to hide a type.
 
 The agent also has extra modes:
 
@@ -41,6 +46,7 @@ python 05_answer_questions.py --json               # also write answers.json
 | 3 | `03_build_knowledge_graph.py` | `data/processed/knowledge_graph.json` |
 | 4 | `04_detect_anomalies.py` | `data/processed/cleaned_dataset.json` |
 | 5 | `05_answer_questions.py` | prints answers (`--json` writes `answers.json`) |
+| 6 | `06_export_graph_html.py` | `data/processed/knowledge_graph.html` (optional) |
 
 ---
 
@@ -77,7 +83,8 @@ ai-investigation-platform/
 ├── 02_parse_artifacts.py        #  │ run these five,
 ├── 03_build_knowledge_graph.py  #  │ in order,
 ├── 04_detect_anomalies.py       #  │ from the project root
-└── 05_answer_questions.py       # ─┘
+├── 05_answer_questions.py       # ─┘
+└── 06_export_graph_html.py      # optional: interactive HTML graph
 ```
 
 **Steps 1–4 need `src/`** (it holds the actual logic; the numbered root scripts

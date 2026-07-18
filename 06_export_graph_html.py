@@ -26,7 +26,7 @@ DEFAULT_OUT = Path("data/processed/knowledge_graph.html")
 # Entity types always kept (few in number, they form the investigation backbone).
 CORE_TYPES = {
     "client", "host", "session", "request", "ip", "mac", "artifact",
-    "user", "application",
+    "user", "application", "url", "cve",
 }
 
 
@@ -198,7 +198,7 @@ const DATA = /*__DATA__*/;
 const V = DATA.view, META = DATA.meta;
 const COLORS = { client:"#f778ba", host:"#58a6ff", session:"#79c0ff", request:"#a5d6ff",
   user:"#3fb950", application:"#d29922", file:"#8b949e", hash:"#6e7681",
-  ip:"#ff7b72", mac:"#ffa657", artifact:"#bc8cff" };
+  ip:"#ff7b72", mac:"#ffa657", artifact:"#bc8cff", url:"#39c5cf", cve:"#f85149" };
 const color = t => COLORS[t] || "#8b949e";
 
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");

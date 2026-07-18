@@ -13,12 +13,15 @@ no explicit client or session field of their own.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from . import graph_schema as S
 from .graph_model import KnowledgeGraph
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 
 
 class CollectionContext:
@@ -190,6 +193,92 @@ def _graph_file_record(
         graph.add_edge(ctx.session_node, file_node, S.COLLECTED, rid)
 
 
+def _graph_browser_record(
+    graph: KnowledgeGraph, record: Dict[str, Any], ctx: CollectionContext
+) -> None:
+    """Add nodes/edges from a browser_history / browser_download record."""
+    ids = record.get("identifiers", {})
+    od = record.get("original_data", {})
+    ts = record.get("timestamp")
+    rid = record.get("record_id")
+
+    url = ids.get("url") or od.get("url")
+    if not S.is_valid(url):
+        return
+
+    url_node = S.node_id(S.URL, url)
+    graph.add_node(
+        url_node, S.URL, url[:80],
+        {"full_url": url, "title": od.get("title")}, rid, ts,
+    )
+
+    # The user who visited / downloaded it, anchored to the host.
+    username = record.get("path", {}).get("username") or ids.get("username")
+    user_node = None
+    if S.is_valid(username):
+        user_node = S.node_id(S.USER, username)
+        graph.add_node(user_node, S.USER, username, {}, rid, ts)
+        if ctx.host_node:
+            graph.add_edge(ctx.host_node, user_node, S.HAS_USER, rid)
+        relation = (
+            S.DOWNLOADED if record.get("evidence_type") == "browser_download" else S.VISITED
+        )
+        graph.add_edge(user_node, url_node, relation, rid)
+
+    # A download that landed on disk links the URL to the saved file.
+    if record.get("evidence_type") == "browser_download":
+        target = ids.get("file_path") or od.get("target_path")
+        if S.is_valid(target):
+            file_node = S.node_id(S.FILE, target)
+            graph.add_node(
+                file_node, S.FILE,
+                record.get("path", {}).get("filename") or target,
+                {"full_path": target}, rid, ts,
+            )
+            graph.add_edge(url_node, file_node, S.SAVED_AS, rid)
+            if user_node:
+                graph.add_edge(user_node, file_node, S.OWNS, rid)
+
+
+def _iter_strings(value: Any) -> Iterable[str]:
+    """Recursively yield every string inside a JSON-like value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_strings(child)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_strings(item)
+
+
+def _graph_cves(
+    graph: KnowledgeGraph, records: List[Dict[str, Any]], ctx: CollectionContext
+) -> None:
+    """Add CVE nodes, linked to the collection context that references them.
+
+    A CVE identifier present in the data becomes a node; the edge only records
+    *that the collection referenced it* (REFERENCES_CVE) - it does not assert a
+    link to any particular download, which the raw data does not establish.
+    """
+    anchor = ctx.session_node or ctx.client_node or ctx.host_node
+    for record in records:
+        cves = set()
+        cve_id = record.get("identifiers", {}).get("cve")
+        if cve_id:
+            cves.add(cve_id.upper())
+        if record.get("evidence_type") in _CVE_SCAN_EVIDENCE:
+            for text in _iter_strings(record.get("original_data", {})):
+                for match in _CVE_RE.findall(text):
+                    cves.add(match.upper())
+        for cve in cves:
+            cve_node = S.node_id(S.CVE, cve)
+            graph.add_node(cve_node, S.CVE, cve, {}, record.get("record_id"),
+                           record.get("timestamp"))
+            if anchor:
+                graph.add_edge(anchor, cve_node, S.REFERENCES_CVE, record.get("record_id"))
+
+
 def _split(value: Optional[str]) -> List[str]:
     """Split a comma-joined identifier string into individual values."""
     if not value:
@@ -199,6 +288,8 @@ def _split(value: Optional[str]) -> List[str]:
 
 _FILE_EVIDENCE = {"file_metadata", "uploaded_file"}
 _CONTEXT_EVIDENCE = {"client_info", "collection_context", "flow_request"}
+_BROWSER_EVIDENCE = {"browser_history", "browser_download"}
+_CVE_SCAN_EVIDENCE = {"flow_request", "client_info", "collection_context"}
 
 
 def build_graph(dataset: Dict[str, Any]) -> Dict[str, Any]:
@@ -215,8 +306,11 @@ def build_graph(dataset: Dict[str, Any]) -> Dict[str, Any]:
             _graph_file_record(graph, record, context)
         elif evidence_type in _CONTEXT_EVIDENCE:
             _graph_context_record(graph, record, context)
+        elif evidence_type in _BROWSER_EVIDENCE:
+            _graph_browser_record(graph, record, context)
         # log_entry / generic records carry no correlatable entities.
 
+    _graph_cves(graph, records, context)
     return _assemble(graph, dataset, context)
 
 

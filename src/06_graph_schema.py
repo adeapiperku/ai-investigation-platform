@@ -23,6 +23,8 @@ HASH = "hash"
 IP = "ip"
 MAC = "mac"
 ARTIFACT = "artifact"    # Velociraptor artifact that produced evidence
+URL = "url"              # a web address visited or downloaded from
+CVE = "cve"              # a vulnerability identifier referenced in the data
 
 # --------------------------------------------------------------------------- #
 # Relationship (edge) types
@@ -40,6 +42,10 @@ HAS_HASH = "HAS_HASH"                # file -> hash
 ASSOCIATED_WITH = "ASSOCIATED_WITH"  # file -> application
 USED = "USED"                        # user -> application
 COLLECTED = "COLLECTED"              # session -> file
+DOWNLOADED = "DOWNLOADED"            # user -> url (browser download)
+VISITED = "VISITED"                  # user -> url (browsing history)
+SAVED_AS = "SAVED_AS"                # url -> file (downloaded target)
+REFERENCES_CVE = "REFERENCES_CVE"    # collection/context -> cve
 
 _ID_SAFE = re.compile(r"\s+")
 
@@ -57,7 +63,9 @@ def node_id(node_type: str, value: str) -> str:
     """
     if node_type in (CLIENT, SESSION, REQUEST, ARTIFACT):
         key = value.strip()
-    elif node_type == FILE:
+    elif node_type == CVE:
+        key = value.strip().upper()
+    elif node_type in (FILE, URL):
         key = value.strip().replace("\\", "/").lower()
     else:
         key = _slug(value)

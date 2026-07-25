@@ -9,8 +9,13 @@ invents evidence.
 
 ## How to run
 
-Run these five scripts **from the project root, in order** (Python 3.9+, standard
-library only — no `pip install` needed):
+python -m venv .venv
+
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+
+Run these five scripts **from the project root, in order**:
 
 ```bash
 python 01_build_dataset.py          # normalize all JSON/JSONL evidence
@@ -91,23 +96,3 @@ ai-investigation-platform/
 are thin runners). **Step 5 is standalone** — it only reads the processed JSON.
 
 ---
-
-## How "no invented evidence" is enforced
-
-- Steps 1–4 keep every original record under `original_data` and only *flag*
-  problems; nothing is silently dropped except exact duplicates in step 4.
-- The step-5 agent answers **only** from the structured records and attaches the
-  `record_id` + `source_file` to every fact. When the data does not contain an
-  answer (e.g. the login time), it says so rather than guessing.
-
----
-
-## Notes
-
-- **Duplicates** are *detected* in `src/04_validators.py` (flagged as collection
-  problems in step 1) and *removed* in `src/09_anomaly_detector.py` (step 4).
-- **Q2 has no source in this collection.** No `.evtx` or registry hives were
-  captured. The artifact parser (`src/10_artifact_parser.py`) is structured so a
-  logon/registry parser could be added the same way if a future collection
-  includes them.
-```

@@ -1,11 +1,11 @@
-# python 05_answer_questions.py
-"""Step 5 entry point: the evidence-grounded investigation agent.
+# python 04_answer_questions.py
+"""Step 4 entry point: the evidence-grounded investigation agent.
 
 Usage:
-    python 05_answer_questions.py                 # answer the 4 canonical questions
-    python 05_answer_questions.py --interactive   # ask questions in a terminal REPL
-    python 05_answer_questions.py "your question" # answer a single question
-    python 05_answer_questions.py --json           # also write answers.json
+    python 04_answer_questions.py                 # answer the canonical questions
+    python 04_answer_questions.py --interactive   # ask questions in a terminal REPL
+    python 04_answer_questions.py "your question" # answer a single question
+    python 04_answer_questions.py --json           # also write answers.json
 
 The agent is **evidence-first**: it only reports facts that are present in the
 processed dataset files, and every answer carries the ``record_id`` /
@@ -13,10 +13,10 @@ processed dataset files, and every answer carries the ``record_id`` /
 answer, the agent says so instead of guessing — this is what the assignment
 means by "the agents must not invent evidence".
 
-It reads only the Step 1–4 outputs (nothing from ``src`` and no raw parsing):
-    data/processed/cleaned_dataset.json      (preferred: deduped + leads)
-    data/processed/normalized_dataset.json   (fallback)
-    data/processed/knowledge_graph.json      (optional, for graph queries)
+It reads only pipeline outputs (no raw parsing of its own):
+    data/processed/cleaned_dataset.json  (preferred: deduped, with leads)
+    data/normalized/*.normalized.json    (fallback: the per-dataset files)
+    data/processed/knowledge_graph.json  (optional, for graph queries)
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 PROCESSED = Path("data/processed")
+NORMALIZED = Path("data/normalized")
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 _REPO_RE = re.compile(r"https?://(?:www\.)?(?:github|codeload)\.[^/]+/([^/]+)/([^/?#]+)", re.I)
 
@@ -108,18 +109,25 @@ class Dataset:
 
     def load(self) -> None:
         cleaned = PROCESSED / "cleaned_dataset.json"
-        normalized = PROCESSED / "normalized_dataset.json"
         if cleaned.exists():
             data = json.loads(cleaned.read_text(encoding="utf-8"))
             self.leads = data.get("investigation_leads", {})
             self.source_name = cleaned.name
-        elif normalized.exists():
-            data = json.loads(normalized.read_text(encoding="utf-8"))
-            self.source_name = normalized.name
+        elif NORMALIZED.is_dir() and any(NORMALIZED.glob("*.normalized.json")):
+            # Fall back to the per-dataset files, combined in memory.
+            data = {"normalized_records": []}
+            names = []
+            for path in sorted(NORMALIZED.glob("*.normalized.json")):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                data["normalized_records"].extend(document.get("records", []))
+                names.append(path.name)
+            self.source_name = f"{len(names)} normalized dataset files"
         else:
             raise FileNotFoundError(
-                "no processed dataset found. Run Steps 1-4 first, e.g.:\n"
-                "  python 01_build_dataset.py && python 02_parse_artifacts.py"
+                "no processed evidence found. Run the pipeline first:\n"
+                "  python 01_normalize_datasets.py\n"
+                "  python 02_build_knowledge_graph.py\n"
+                "  python 03_detect_anomalies.py"
             )
         self.records = data.get("normalized_records", [])
         graph_path = PROCESSED / "knowledge_graph.json"
@@ -254,25 +262,46 @@ def q_repo(ds: Dataset) -> Answer:
 
 
 def q_cve(ds: Dataset) -> Answer:
-    """Q4: the CVE that let the repository trigger the stealer on open."""
+    """Q4: the CVE that let the repository trigger the stealer on open.
+
+    Only endpoint evidence counts. KAPE's target definitions quote CVE numbers
+    in their own description text — "Payloads for CVE-2022-30190 ('Follina')
+    will be in this log" — and that string rides along in the collection
+    request of *every* KAPE collection, clean or compromised. Matching it would
+    report the collector's documentation as a finding about this endpoint.
+    """
     q = ("Provide the CVE ID that allowed the downloaded repository to trigger the data-stealer "
          "automatically when opened in the target application.")
-    # Prefer the pre-computed leads, else scan every record.
-    for lead in (ds.leads.get("cves") or []):
-        return Answer(q, lead.get("value"), "answered",
-                      "CVE identifier found in the collected data (matches an 'opened in "
-                      "application → automatic execution' vulnerability, e.g. Follina/MSDT).",
-                      [Evidence(lead.get("record_id"), lead.get("source_file"),
-                                f"CVE reference: {lead.get('value')}")])
-    for r in ds.records:
+
+    def endpoint_records() -> List[Dict[str, Any]]:
+        return [
+            r for r in ds.records
+            if r.get("provenance", "endpoint_evidence") == "endpoint_evidence"
+        ]
+
+    for r in endpoint_records():
         for text in _strings(r.get("original_data", {})):
             m = _CVE_RE.search(text)
             if m:
                 return Answer(q, m.group(0).upper(), "answered",
-                              "CVE identifier found by scanning the structured record data.",
+                              "CVE identifier found in endpoint evidence.",
                               [Evidence(r.get("record_id"), r.get("source_file"),
                                         f"CVE reference in record: {m.group(0).upper()}")])
-    return Answer(q, None, "insufficient_evidence", "No CVE identifier present in the dataset.")
+
+    tooling_hits = sum(
+        1 for r in ds.records
+        if r.get("provenance") == "collection_tooling"
+        and any(_CVE_RE.search(t) for t in _strings(r.get("original_data", {})))
+    )
+    detail = (
+        "No CVE identifier appears in any endpoint artifact. "
+        f"({tooling_hits} CVE mention(s) exist in collection-tooling records — KAPE target "
+        "descriptions — but those describe the collector's configuration, not this host, "
+        "and are present in every collection.)"
+        if tooling_hits else
+        "No CVE identifier present in any endpoint artifact."
+    )
+    return Answer(q, None, "insufficient_evidence", detail)
 
 
 # Canonical questions, in order, with keyword routing for free-text queries.

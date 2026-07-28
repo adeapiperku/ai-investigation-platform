@@ -298,7 +298,12 @@ def main():
     output_file.write_text(report, encoding='utf-8')
     
     print(f"\nReport saved to {output_file}")
-    print(f"\nPreview:\n{report[:800]}...\n")
+    # The report contains emoji; a cp1252 console cannot encode them, so drop
+    # anything unprintable from the preview rather than crashing after the
+    # file has already been written successfully.
+    encoding = sys.stdout.encoding or "utf-8"
+    preview = report[:800].encode(encoding, errors="replace").decode(encoding)
+    print(f"\nPreview:\n{preview}...\n")
 
 if __name__ == "__main__":
     main()

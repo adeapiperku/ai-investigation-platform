@@ -1,155 +1,227 @@
-"""Orchestration: build the normalized investigation dataset.
+"""Per-dataset normalization.
 
-Ties together loading, normalization, extraction and validation to produce the
-final ``normalized_dataset.json`` structure:
+Each dataset in :mod:`src.dataset_registry` is normalized **on its own**, into
+its own output file, using one shared record schema:
 
     {
-      "dataset_metadata": {...},
-      "summary": {...},
-      "collection_problems": [...],
-      "normalized_records": [...]
+      "record_id":     "<dataset>:<index>:<digest>",
+      "dataset":       "browser_downloads",
+      "source_file":   "uploads/auto/.../History",
+      "evidence_type": "browser_download",
+      "timestamp":     "2025-10-09T18:02:20Z",   # UTC ISO-8601, or null
+      "identifiers":   {...},                    # correlation keys
+      "path":          {...},                    # decomposed file path
+      "original_data": {...}                     # the dataset's own payload
     }
+
+Every dataset produces records in exactly that shape, which is what makes them
+comparable without being merged. A source file that fails to parse costs you
+that one dataset, not the whole run.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-from .extractors import classify_evidence, extract_identifiers, extract_timestamp
-from .loaders import (
-    CollectionProblem,
-    LoadedFile,
-    discover_data_files,
-    load_file,
+from .dataset_registry import DATASETS, DatasetSpec
+from .extractors import extract_identifiers, extract_timestamp
+from .loaders import CollectionProblem
+from .normalizers import normalize_path, normalize_timestamp
+from .validators import validate_record
+
+# The record schema every dataset conforms to.
+RECORD_SCHEMA: Tuple[str, ...] = (
+    "record_id",
+    "dataset",
+    "provenance",
+    "source_file",
+    "evidence_type",
+    "timestamp",
+    "identifiers",
+    "path",
+    "original_data",
 )
-from .normalizers import normalize_path
-from .validators import detect_duplicates, validate_record
+
+# Identifiers that only mean something when they describe the endpoint. A CVE or
+# URL quoted in the collector's own configuration is documentation, not an
+# indicator, so these are not extracted from ``collection_tooling`` datasets.
+_ENDPOINT_ONLY_IDENTIFIERS: Tuple[str, ...] = ("cve", "url", "ip", "hash", "domain")
+
+# Timestamp fields the generic extractor does not know about, per dataset.
+_EXTRA_TIMESTAMP_KEYS: Dict[str, Tuple[str, ...]] = {
+    "browser_history": ("last_visit_utc",),
+    "browser_downloads": ("start_time_utc", "end_time_utc"),
+    "onedrive_sync": ("log_timestamp",),
+    "shell_links": ("target_modified", "target_created"),
+    "registry_user": ("key_last_written", "hive_last_written"),
+}
+
+# Payload keys that hold a file path, in priority order, beyond what the generic
+# extractor already checks.
+_EXTRA_PATH_KEYS: Tuple[str, ...] = (
+    "target_path",
+    "local_base_path",
+    "_artifact_source",
+)
 
 
-def _make_record_id(source_name: str, index: int, record: Dict[str, Any]) -> str:
-    """Create a deterministic record id from source, position and content."""
-    digest = hashlib.sha1(
-        f"{source_name}:{index}:{sorted(record.items(), key=lambda kv: kv[0])}".encode(
-            "utf-8", errors="replace"
-        )
-    ).hexdigest()[:12]
-    return f"{Path(source_name).name}:{index}:{digest}"
+def _make_record_id(dataset: str, index: int, payload: Dict[str, Any]) -> str:
+    """Create a deterministic record id from dataset, position and content."""
+    try:
+        body = json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        body = repr(payload)
+    digest = hashlib.sha1(f"{dataset}:{index}:{body}".encode("utf-8", "replace")).hexdigest()
+    return f"{dataset}:{index}:{digest[:12]}"
 
 
-def _best_path(record: Dict[str, Any], identifiers: Dict[str, str]) -> Dict[str, Any]:
-    """Normalize the primary file path referenced by a record, if any."""
-    raw_path = identifiers.get("file_path")
-    if raw_path:
-        return normalize_path(raw_path)
-    return normalize_path(None)
+def _resolve_timestamp(payload: Dict[str, Any], spec: DatasetSpec) -> str | None:
+    """Find this record's most relevant timestamp, normalized to UTC ISO-8601."""
+    for key in _EXTRA_TIMESTAMP_KEYS.get(spec.name, ()):
+        value = payload.get(key)
+        if value:
+            normalized = normalize_timestamp(value)
+            if normalized:
+                return normalized
+    return extract_timestamp(payload)
 
 
-def _build_record(
-    raw: Dict[str, Any], source_name: str, index: int
+def _resolve_path(payload: Dict[str, Any], identifiers: Dict[str, str]) -> Dict[str, Any]:
+    """Decompose the primary file path this record refers to."""
+    raw = identifiers.get("file_path")
+    if not raw:
+        for key in _EXTRA_PATH_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                raw = value
+                break
+    return normalize_path(raw)
+
+
+def normalize_record(
+    payload: Dict[str, Any], spec: DatasetSpec, index: int
 ) -> Dict[str, Any]:
-    """Assemble one normalized record while preserving the original data."""
-    identifiers = extract_identifiers(raw)
-    timestamp = extract_timestamp(raw)
-    path_fields = _best_path(raw, identifiers)
-    evidence_type = classify_evidence(raw, source_name)
+    """Turn one raw payload into a record in the shared schema."""
+    source_file = payload.get("_artifact_source") or spec.name
+    body = {
+        key: value
+        for key, value in payload.items()
+        if key != "_artifact_source" and key not in spec.drop_fields
+    }
+
+    identifiers = extract_identifiers(body)
+    if spec.provenance != "endpoint_evidence":
+        # See _ENDPOINT_ONLY_IDENTIFIERS: the collector's own configuration
+        # quotes CVEs and URLs that have nothing to do with this endpoint.
+        for key in _ENDPOINT_ONLY_IDENTIFIERS:
+            identifiers.pop(key, None)
+
+    path_fields = _resolve_path({**body, "_artifact_source": source_file}, identifiers)
+
+    # A profile-scoped artifact attributes to its profile owner even when the
+    # payload itself never names a user.
+    if "username" not in identifiers and path_fields.get("username"):
+        identifiers["username"] = path_fields["username"]
 
     return {
-        "record_id": _make_record_id(source_name, index, raw),
-        "source_file": source_name,
-        "evidence_type": evidence_type,
-        "timestamp": timestamp,
+        "record_id": _make_record_id(spec.name, index, body),
+        "dataset": spec.name,
+        "provenance": spec.provenance,
+        "source_file": source_file,
+        "evidence_type": spec.evidence_type,
+        "timestamp": _resolve_timestamp(payload, spec),
         "identifiers": identifiers,
         "path": path_fields,
-        "original_data": raw,
+        "original_data": body,
     }
 
 
 def _summarize(
-    records: List[Dict[str, Any]],
-    source_files: List[str],
-    problems: List[CollectionProblem],
+    records: List[Dict[str, Any]], problems: List[CollectionProblem]
 ) -> Dict[str, Any]:
     """Compute dataset-level summary statistics."""
 
-    def collect(field: str) -> List[str]:
-        values = {
-            r["identifiers"][field]
-            for r in records
-            if r["identifiers"].get(field)
-        }
-        return sorted(values)
+    def collect(field_name: str) -> List[str]:
+        return sorted(
+            {
+                record["identifiers"][field_name]
+                for record in records
+                if record["identifiers"].get(field_name)
+            }
+        )
 
-    urls = collect("url")
-    problem_counts = Counter(p.problem_type for p in problems)
-    evidence_counts = Counter(r["evidence_type"] for r in records)
-
+    timestamps = sorted(r["timestamp"] for r in records if r["timestamp"])
     return {
-        "num_source_files": len(source_files),
         "num_records": len(records),
+        "records_with_timestamp": len(timestamps),
+        "time_range": (
+            {"first": timestamps[0], "last": timestamps[-1]} if timestamps else None
+        ),
         "identified_users": collect("username"),
         "identified_hosts": collect("hostname"),
-        "identified_applications": collect("application"),
-        "identified_repositories": collect("repository"),
-        "identified_urls": urls,
-        "identified_cves": collect("cve"),
+        "identified_urls": collect("url"),
         "identified_ips": collect("ip"),
+        "identified_cves": collect("cve"),
         "identified_hashes_count": len(collect("hash")),
-        "evidence_type_counts": dict(sorted(evidence_counts.items())),
-        "collection_issue_counts": dict(sorted(problem_counts.items())),
+        "collection_issue_counts": dict(
+            sorted(Counter(p.problem_type for p in problems).items())
+        ),
         "total_collection_issues": len(problems),
     }
 
 
-def build_dataset(raw_dir: Path) -> Dict[str, Any]:
-    """Run the full normalization pipeline over ``raw_dir``.
+def build_one(spec: DatasetSpec, raw_dir: Path) -> Dict[str, Any]:
+    """Normalize a single dataset into its self-contained output document."""
+    files = spec.discover(raw_dir)
+    if files:
+        payloads, problems = spec.read(files, raw_dir)
+    else:
+        payloads, problems = [], [
+            CollectionProblem(spec.name, "dataset_not_collected", "no source files found")
+        ]
 
-    Returns the complete dataset dictionary ready to be serialized to JSON.
-    """
-    files = discover_data_files(raw_dir)
-    all_records: List[Dict[str, Any]] = []
-    all_problems: List[CollectionProblem] = []
-    source_names: List[str] = []
+    records: List[Dict[str, Any]] = []
+    for index, payload in enumerate(payloads):
+        if not isinstance(payload, dict):
+            continue
+        record = normalize_record(payload, spec, index)
+        records.append(record)
+        problems.extend(validate_record(record))
 
-    for path in files:
-        loaded: LoadedFile = load_file(path, raw_dir)
-        source_name = _relative(path, raw_dir)
-        source_names.append(source_name)
-        all_problems.extend(loaded.problems)
+    if files and not records:
+        problems.append(
+            CollectionProblem(
+                spec.name, "no_records", "source files held no usable records"
+            )
+        )
 
-        for index, raw in enumerate(loaded.records):
-            record = _build_record(raw, source_name, index)
-            all_records.append(record)
-            all_problems.extend(validate_record(record))
-
-    all_problems.extend(detect_duplicates(all_records))
-
-    summary = _summarize(all_records, source_names, all_problems)
-    metadata = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "phase": "Phase 1 - Data Normalization",
-        "raw_data_dir": str(raw_dir),
-        "source_files": source_names,
-        "record_schema": [
-            "record_id",
-            "source_file",
-            "evidence_type",
-            "timestamp",
-            "identifiers",
-            "path",
-            "original_data",
-        ],
-    }
-
+    source_files = sorted({_relative(path, raw_dir) for path in files})
     return {
-        "dataset_metadata": metadata,
-        "summary": summary,
-        "collection_problems": [p.as_dict() for p in all_problems],
-        "normalized_records": all_records,
+        "dataset": {
+            "name": spec.name,
+            "provenance": spec.provenance,
+            "evidence_type": spec.evidence_type,
+            "description": spec.description,
+            "answers_questions": list(spec.answers_questions),
+            "source_files": source_files[:100],
+            "num_source_files": len(source_files),
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "record_schema": list(RECORD_SCHEMA),
+        },
+        "summary": _summarize(records, problems),
+        "collection_problems": [problem.as_dict() for problem in problems],
+        "records": records,
     }
+
+
+def build_all(raw_dir: Path) -> List[Tuple[DatasetSpec, Dict[str, Any]]]:
+    """Normalize every registered dataset, independently, in catalogue order."""
+    return [(spec, build_one(spec, raw_dir)) for spec in DATASETS]
 
 
 def _relative(path: Path, root: Path) -> str:

@@ -1,12 +1,16 @@
-# python 04_detect_anomalies.py
-"""Phase 4 entry point: clean the dataset and detect anomalies.
+# python 03_detect_anomalies.py
+"""Phase 3 entry point: clean the evidence and detect anomalies.
 
 Usage:
-    python 04_detect_anomalies.py [--dataset FILE] [--out FILE]
+    python 03_detect_anomalies.py [--normalized DIR] [--out FILE]
 
-Reads the Phase 1 normalized dataset, removes duplicate records, flags
+Reads the per-dataset normalized files, removes duplicate records, flags
 anomalies and surfaces investigation leads (URLs, CVEs, possible logon
 evidence), then writes ``data/processed/cleaned_dataset.json``.
+
+Deduplication runs *across* datasets on purpose: the same file can appear in
+the upload manifest, the file-metadata sweep and the upload transcript, and
+the cleaned view collapses those into one.
 """
 
 from __future__ import annotations
@@ -17,34 +21,30 @@ import sys
 from pathlib import Path
 
 from src.anomaly_detector import analyze
+from src.normalized_loader import require_normalized
 
-DEFAULT_DATASET = Path("data/processed/normalized_dataset.json")
+DEFAULT_NORMALIZED = Path("data/normalized")
 DEFAULT_OUT = Path("data/processed/cleaned_dataset.json")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Phase 3 cleaning & anomaly detection")
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--normalized", type=Path, default=DEFAULT_NORMALIZED)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Load the dataset, clean/analyze it and write the result to disk."""
+    """Load the normalized datasets, clean/analyze them and write the result."""
     args = parse_args(argv)
 
-    if not args.dataset.exists():
-        print(
-            f"error: normalized dataset not found: {args.dataset}\n"
-            "run Phase 1 first:  python 01_build_dataset.py",
-            file=sys.stderr,
-        )
+    print(f"Loading normalized datasets from {args.normalized} ...")
+    try:
+        dataset = require_normalized(args.normalized)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    print(f"Loading {args.dataset} ...")
-    with args.dataset.open(encoding="utf-8") as handle:
-        dataset = json.load(handle)
 
     print("Cleaning dataset and detecting anomalies ...")
     cleaned = analyze(dataset)

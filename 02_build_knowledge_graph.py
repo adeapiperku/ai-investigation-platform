@@ -1,11 +1,13 @@
-# python 03_build_knowledge_graph.py
+# python 02_build_knowledge_graph.py
 """Phase 2 entry point: build the investigation knowledge graph.
 
 Usage:
-    python 03_build_knowledge_graph.py [--dataset FILE] [--out FILE]
+    python 02_build_knowledge_graph.py [--normalized DIR] [--out FILE]
+                                       [--only DATASET ...]
 
-Reads the Phase 1 normalized dataset and writes
-``data/processed/knowledge_graph.json``.
+Reads the per-dataset normalized files, combines them **in memory only**, and
+writes ``data/processed/knowledge_graph.json``. Use ``--only`` to graph a
+subset of the datasets.
 """
 
 from __future__ import annotations
@@ -16,35 +18,41 @@ import sys
 from pathlib import Path
 
 from src.graph_builder import build_graph
+from src.normalized_loader import load_normalized, require_normalized
 
-DEFAULT_DATASET = Path("data/processed/normalized_dataset.json")
+DEFAULT_NORMALIZED = Path("data/normalized")
 DEFAULT_OUT = Path("data/processed/knowledge_graph.json")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Phase 2 knowledge-graph builder")
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--normalized", type=Path, default=DEFAULT_NORMALIZED)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--only", nargs="+", metavar="DATASET")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Load the dataset, build the graph and write it to disk."""
+    """Load the normalized datasets, build the graph and write it to disk."""
     args = parse_args(argv)
 
-    if not args.dataset.exists():
-        print(
-            f"error: normalized dataset not found: {args.dataset}\n"
-            "run Phase 1 first:  python 01_build_dataset.py",
-            file=sys.stderr,
+    print(f"Loading normalized datasets from {args.normalized} ...")
+    try:
+        dataset = (
+            load_normalized(args.normalized, only=args.only)
+            if args.only
+            else require_normalized(args.normalized)
         )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Loading {args.dataset} ...")
-    with args.dataset.open(encoding="utf-8") as handle:
-        dataset = json.load(handle)
-
+    meta = dataset["dataset_metadata"]
+    print(
+        f"  {meta['num_datasets']} dataset(s), "
+        f"{len(dataset['normalized_records'])} records"
+    )
     print("Building knowledge graph ...")
     graph = build_graph(dataset)
 

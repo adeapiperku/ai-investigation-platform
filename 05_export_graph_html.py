@@ -1,4 +1,4 @@
-# python 06_export_graph_html.py
+# python 05_export_graph_html.py
 """Step 6 entry point: export the knowledge graph as an interactive HTML page.
 
 Usage:
@@ -117,7 +117,7 @@ def main(argv: List[str] | None = None) -> int:
 
     if not args.graph.exists():
         print(f"error: knowledge graph not found: {args.graph}\n"
-              "run Step 3 first:  python 03_build_knowledge_graph.py", file=sys.stderr)
+              "run Step 2 first:  python 02_build_knowledge_graph.py", file=sys.stderr)
         return 1
 
     graph = json.loads(args.graph.read_text(encoding="utf-8"))

@@ -79,3 +79,7 @@ uvicorn==0.34.0
 watchfiles==1.2.0
 websockets==16.0
 wrapt==2.2.1
+
+# Azure AI Foundry upload (step 8)
+azure-ai-agents
+azure-identity

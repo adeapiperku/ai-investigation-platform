@@ -24,12 +24,21 @@ _MODULES = [
     ("normalizers", "02_normalizers.py"),
     ("extractors", "03_extractors.py"),
     ("validators", "04_validators.py"),
+    # The artifact parsers and the registry load before the builder, which
+    # consumes all of them.
+    ("artifact_parser", "10_artifact_parser.py"),
+    ("lnk_parser", "12_lnk_parser.py"),
+    ("onedrive_parser", "13_onedrive_parser.py"),
+    ("registry_parser", "14_registry_parser.py"),
+    ("dataset_registry", "11_dataset_registry.py"),
     ("dataset_builder", "05_dataset_builder.py"),
+    ("normalized_loader", "15_normalized_loader.py"),
+    ("derived_datasets", "17_derived_datasets.py"),
     ("graph_schema", "06_graph_schema.py"),
     ("graph_model", "07_graph_model.py"),
     ("graph_builder", "08_graph_builder.py"),
     ("anomaly_detector", "09_anomaly_detector.py"),
-    ("artifact_parser", "10_artifact_parser.py"),
+    ("foundry_bundle", "16_foundry_bundle.py"),
 ]
 
 _here = Path(__file__).resolve().parent
